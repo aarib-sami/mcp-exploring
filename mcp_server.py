@@ -2,9 +2,12 @@ from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts import base
 
+# FastMCP creates an MCP server and registers tools/resources/prompts via decorators.
 mcp = FastMCP("DocumentMCP", log_level="ERROR")
 
 
+# In-memory sample datastore used by the server.
+# Keys are document ids, values are document contents.
 docs = {
     "deposition.md": "This deposition covers the testimony of Angela Smith, P.E.",
     "report.pdf": "The report details the state of a 20m condenser tower.",
@@ -21,6 +24,8 @@ docs = {
 def read_document(
     doc_id: str = Field(description="Id of the document to read")
 ):
+    # MCP tool: callable action exposed to the client.
+    # Here, the tool returns raw text content for one document id.
     if doc_id not in docs:
         raise ValueError(f"Doc with id {doc_id} not found")
 
@@ -35,6 +40,8 @@ def edit_document(
     old_str: str = Field(description="The text to replace. must match exactly, included white space"),
     new_str: str = Field(description="The new text to insert in place of the old test")
 ):
+    # MCP tool: mutates the in-memory doc by doing a simple string replacement.
+    # Note: str.replace() does not error if old_str is missing; it just leaves text unchanged.
     if docs_id not in docs:
         raise ValueError(f"Doc with id {docs_id} not found")
     docs[docs_id] = docs[docs_id].replace(old_str, new_str)
@@ -44,6 +51,8 @@ def edit_document(
     mime_type="application/json"
 )
 def list_docs() -> list[str]:
+    # MCP resource: read-only content addressable by URI.
+    # This endpoint returns all available doc ids.
     return list(docs.keys())
 
 @mcp.resource(
@@ -51,6 +60,7 @@ def list_docs() -> list[str]:
     mime_type="text/plain"
 )
 def fetch_doc(docs_id: str) -> str:
+    # MCP resource endpoint for fetching one document's text by id.
     if docs_id not in docs:
         raise ValueError(f"Doc with id {docs_id} not found")
     return docs[docs_id]
@@ -64,6 +74,8 @@ def fetch_doc(docs_id: str) -> str:
 def format_document(
     doc_id: str =Field(description="Id of the document to format")
 ) -> list[base.Message]:
+    # MCP prompt: server-provided prompt template that clients/agents can request.
+    # Returning UserMessage(s) lets the client inject structured instructions into a chat flow.
     prompt = f"""
     Your goal is to reformat a document to be written with markdown syntax.
 
@@ -82,4 +94,5 @@ def format_document(
 
 
 if __name__ == "__main__":
+    # Starts the MCP server over stdio so local clients can launch/connect as a subprocess.
     mcp.run(transport="stdio")

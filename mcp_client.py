@@ -9,34 +9,48 @@ from mcp.client.stdio import stdio_client
 
 
 class MCPClient:
+    # This class wraps all MCP client lifecycle steps:
+    # 1) launch/connect to an MCP server process over stdio
+    # 2) expose helper methods (tools, prompts, resources)
+    # 3) cleanly close everything on exit
     def __init__(
         self,
         command: str,
         args: list[str],
         env: Optional[dict] = None,
     ):
+        # Command-line used to start the MCP server process
+        # (for example: command="uv", args=["run", "mcp_server.py"]).
         self._command = command
         self._args = args
         self._env = env
+        # Set after connect() succeeds.
         self._session: Optional[ClientSession] = None
+        # Tracks async resources that must be closed in reverse order.
         self._exit_stack: AsyncExitStack = AsyncExitStack()
 
     async def connect(self):
+        # Build process-launch settings for the stdio transport.
         server_params = StdioServerParameters(
             command=self._command,
             args=self._args,
             env=self._env,
         )
+        # Start/connect stdio transport to the MCP server process.
         stdio_transport = await self._exit_stack.enter_async_context(
             stdio_client(server_params)
         )
         _stdio, _write = stdio_transport
+        # Create MCP protocol session over that transport.
         self._session = await self._exit_stack.enter_async_context(
             ClientSession(_stdio, _write)
         )
+        # Perform MCP handshake/initialization before first use.
         await self._session.initialize()
 
     def session(self) -> ClientSession:
+        # Guard helper so call sites fail fast with a clear message
+        # if connect() has not been run yet.
         if self._session is None:
             raise ConnectionError(
                 "Client session not initialized or cache not populated. Call connect_to_server first."
@@ -44,41 +58,52 @@ class MCPClient:
         return self._session
 
     async def list_tools(self) -> list[types.Tool]:
+       # Ask server for all exposed tools.
        result = await self.session().list_tools()
        return result.tools
 
     async def call_tool(
         self, tool_name: str, tool_input: dict
     ) -> types.CallToolResult | None:
+        # Call one specific MCP tool with JSON-like input.
         return await self.session().call_tool(tool_name, tool_input)
 
     async def list_prompts(self) -> list[types.Prompt]:
+        # Ask server for available prompt templates.
         result = await self.session().list_prompts()
         return result.prompts
 
     async def get_prompt(self, prompt_name, args: dict[str, str]):
+        # Resolve one prompt template with argument values.
         result = await self.session().get_prompt(prompt_name, args)
         return result.messages
 
     async def read_resource(self, uri: str) -> Any:
+        # AnyUrl (from pydantic) validates/coerces URI format before request.
         result = await self.session().read_resource(AnyUrl(uri))
         resource = result.contents[0]
 
+        # This sample client only handles text resources.
         if isinstance(resource, types.TextResourceContents):
             if resource.mimeType == "application/json":
+                # Convenience: parse JSON strings into Python objects.
                 return json.loads(resource.text)
-            
+
+            # Plain text resources are returned as-is.
             return resource.text
 
     async def cleanup(self):
+        # Close session + transport + subprocess handles registered in stack.
         await self._exit_stack.aclose()
         self._session = None
 
     async def __aenter__(self):
+        # Support "async with MCPClient(...) as client:" usage.
         await self.connect()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Always cleanup on block exit (normal or exception).
         await self.cleanup()
 
 
